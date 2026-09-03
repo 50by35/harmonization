@@ -1,0 +1,13 @@
+# Copy this file to .Renviron and replace the placeholder token and path.
+DLW_TOKEN=replace-with-your-datalibweb-token
+FDP_PATH=/path/to/local/fdp-mirror
+
+# Optional settings:
+# DLW_API_URL=https://datalibwebapiprod.ase.worldbank.org/dlw/api
+# DLW_API_VERSION=v1
+# FDP_SERVER=FDP
+# FDP_MANIFEST=.fdp-sync-manifest.csv
+# FDP_DRY_RUN=false
+# FDP_REFRESH=false
+# FDP_TIMEOUT_SECONDS=300
+# FDP_RETRIES=3
