@@ -11,3 +11,4 @@ FDP_PATH=/path/to/local/fdp-mirror
 # FDP_REFRESH=false
 # FDP_TIMEOUT_SECONDS=300
 # FDP_RETRIES=3
+# FDP_REPO_PATH=/path/to/this/repository

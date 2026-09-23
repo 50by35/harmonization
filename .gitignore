@@ -52,9 +52,55 @@ rsconnect/
 .DS_Store
 Thumbs.db
 
-# The FDP mirror can contain large or restricted files. Keep it out of Git.
-/FDP/*
+# AI tools
+.kilo/
+
+# The complete FDP mirror can contain large or restricted files. Keep it out
+# of Git, except for generated harmonization programs under FDP/.
+/FDP/**
 !/FDP/.gitkeep
+!/FDP/**/
+!/FDP/**/Programs/
+!/FDP/**/Programs/**
+
+# Never commit data or binary artifacts if they appear under the code mirror.
+/FDP/**/*.dta
+/FDP/**/*.csv
+/FDP/**/*.rds
+/FDP/**/*.rda
+/FDP/**/*.RData
+/FDP/**/*.sas7bdat
+/FDP/**/*.xpt
+/FDP/**/*.sav
+/FDP/**/*.zsav
+/FDP/**/*.xlsx
+/FDP/**/*.xls
+/FDP/**/*.parquet
+/FDP/**/*.feather
+/FDP/**/*.sqlite
+/FDP/**/*.db
+/FDP/**/*.zip
+/FDP/**/*.gz
+/FDP/**/*.bz2
+/FDP/**/*.xz
+/FDP/**/*.7z
+/FDP/**/*.rar
+/FDP/**/*.tar
+/FDP/**/*.pdf
+/FDP/**/*.png
+/FDP/**/*.jpg
+/FDP/**/*.jpeg
+/FDP/**/*.gif
+/FDP/**/*.bmp
+/FDP/**/*.tif
+/FDP/**/*.tiff
+/FDP/**/*.doc
+/FDP/**/*.docx
+/FDP/**/*.ppt
+/FDP/**/*.pptx
+/FDP/**/*.odt
+/FDP/**/*.ods
+/FDP/**/*.md
 
 # Default sync manifest when FDP_PATH points at this repository.
 .fdp-sync-manifest.csv

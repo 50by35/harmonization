@@ -42,6 +42,84 @@ test_that("harmonized collection paths are identified by their directory", {
   ))
 })
 
+test_that("only program paths are mirrored into the repository", {
+  expect_true(update_env$is_program_path(
+    "COL/survey_V01_M_V01_A_FDP/Programs/harmonize.do"
+  ))
+  expect_false(update_env$is_program_path(
+    "COL/survey_V01_M_V01_A_FDP/Data/Harmonized/data.dta"
+  ))
+  expect_true(update_env$is_program_file(
+    "COL/survey_V01_M_V01_A_FDP/Programs/harmonize.py"
+  ))
+  expect_true(update_env$is_program_file(
+    "COL/survey_V01_M_V01_A_FDP/Programs/run"
+  ))
+  expect_false(update_env$is_program_file(
+    "COL/survey_V01_M_V01_A_FDP/Programs/reference.dta"
+  ))
+  expect_false(update_env$is_program_file(
+    "COL/survey_V01_M_V01_A_FDP/Data/Harmonized/data.dta"
+  ))
+})
+
+test_that("repository paths preserve catalog structure for programs only", {
+  root <- tempfile("fdp-repository-")
+  dir.create(root)
+  catalog <- data.table::data.table(
+    FilePath = c(
+      "COL/survey_V01_M_V01_A_FDP/Programs/harmonize.do",
+      "COL/survey_V01_M_V01_A_FDP/Data/Harmonized/data.dta"
+    ),
+    RelativePath = c(
+      "COL/survey_V01_M_V01_A_FDP/Programs/harmonize.do",
+      "COL/survey_V01_M_V01_A_FDP/Data/Harmonized/data.dta"
+    )
+  )
+
+  validated <- update_env$validate_repository_paths(catalog, root)
+
+  expect_identical(validated$IsProgram, c(TRUE, FALSE))
+  expect_identical(
+    validated$RepoRelativePath[[1L]],
+    "COL/survey_V01_M_V01_A_FDP/Programs/harmonize.do"
+  )
+  expect_true(is.na(validated$RepoPath[[2L]]))
+})
+
+test_that("destination roots cannot contain one another", {
+  repository <- tempfile("fdp-repository-")
+  dir.create(repository)
+  config <- list(
+    local_root = fs::path(repository, "mirror"),
+    repository_root = repository
+  )
+
+  expect_error(
+    update_env$validate_destination_roots(config),
+    "outside the repository tree"
+  )
+})
+
+test_that("a current full mirror can repair a repository program copy", {
+  root <- tempfile("fdp-copy-")
+  repository <- tempfile("fdp-repository-")
+  dir.create(root)
+  dir.create(repository)
+  source <- fs::path(root, "program.do")
+  destination <- fs::path(repository, "program.do")
+  writeBin(charToRaw("display hello"), source)
+  row <- data.table::data.table(
+    IsProgram = TRUE,
+    LocalPath = source,
+    RepoPath = destination
+  )
+
+  expect_false(update_env$same_repository_file(row))
+  update_env$atomic_copy(source, destination, repository)
+  expect_true(update_env$same_repository_file(row))
+})
+
 test_that("catalog paths are restricted to relative safe paths", {
   expect_identical(
     update_env$validate_relative_path("COL/data/file.dta"),

@@ -1,12 +1,8 @@
-# 50by35 Harmonized Microdata
+# 50by35 Harmonization
 
-This repository maintains a local mirror of the harmonized collection files
-available from the Datalibweb FDP server. The files support monitoring of the
-50by35 vision.
+This repository maintains a local mirror of the harmonized files available from the Datalibweb FDP server. The files support monitoring of the 50by35 vision. The complete mirror, including microdata, is stored outside Git; only harmonization programs are tracked here.
 
-`update.R` retrieves the current FDP server catalog and downloads every file
-in the harmonized FDP collection using the Datalibweb API. Files are written
-to the complete catalog-provided directory structure beneath `FDP_PATH`.
+`update.R` retrieves the current FDP server catalog and downloads every file in the harmonized FDP collection using the Datalibweb API. The complete catalog-provided directory structure is written beneath `FDP_PATH`, while files under `Programs/` are also copied locally into this repository's `FDP/` directory.
 
 ## Requirements
 
@@ -14,6 +10,7 @@ to the complete catalog-provided directory structure beneath `FDP_PATH`.
 - A Datalibweb token with access to the FDP server
 - R packages: `data.table`, `digest`, `fs`, and `httr2`
 - A local directory with enough storage for the mirror
+- The configured `FDP_PATH` must be outside this repository
 
 Install the R packages if needed:
 
@@ -37,9 +34,7 @@ DLW_TOKEN=your-datalibweb-token
 FDP_PATH=/path/to/local/fdp-mirror
 ```
 
-The token is read directly from `DLW_TOKEN` and is never written by this
-repository. `FDP_PATH` may point to a SharePoint-synced folder or another
-local directory.
+The token is read directly from `DLW_TOKEN` and is never written by this repository. `FDP_PATH` may point to a SharePoint-synced folder or another local directory. The repository's `FDP/` path is inferred from `update.R`, or can be overridden with `FDP_REPO_PATH`.
 
 Optional variables:
 
@@ -54,6 +49,7 @@ Optional variables:
 | `FDP_TIMEOUT_SECONDS` | `300` | Timeout for an individual HTTP request |
 | `FDP_RETRIES` | `3` | Maximum request attempts |
 | `FDP_USER_AGENT` | repository default | HTTP user agent |
+| `FDP_REPO_PATH` | directory containing `update.R` | Repository root used for the tracked program mirror |
 
 ## Usage
 
@@ -75,15 +71,11 @@ To force a complete refresh:
 FDP_REFRESH=true Rscript update.R
 ```
 
-The script prints a summary of unchanged, downloaded, updated, and failed
-files. Files that exist locally but are no longer in the catalog are reported
-as orphans and are not deleted automatically.
+The script prints a summary of unchanged, downloaded, updated, copied, and failed files. Files that exist locally but are no longer in the catalog are reported as orphans and are not deleted automatically.
 
 ## What Is Synced
 
-Every file beneath a harmonized FDP collection directory in the FDP server
-catalog is synchronized. The collection is identified from the catalog path by
-a directory component ending in `_A_FDP`, for example:
+Every file beneath a harmonized FDP collection directory in the FDP server catalog is synchronized. The collection is identified from the catalog path by a directory component ending in `_A_FDP`, for example:
 
 ```text
 COL/COL_2023_GEIH/COL_2023_GEIH_V01_M_V01_A_FDP/
@@ -92,39 +84,26 @@ COL/COL_2023_GEIH/COL_2023_GEIH_V01_M_V01_A_FDP/
 This currently includes:
 
 - Harmonized Stata datasets under `Data/Harmonized/`
-- Harmonization programs under `Programs/`
+- Harmonization code under `Programs/`. These files are downloaded once to `FDP_PATH` and copied from there into the repository's `FDP/` tree.
 
-The selection is not restricted by filename or extension. Programs can use
-different naming conventions and languages, including Stata `.do`, R, Python,
-or other script files exposed by the catalog. Any additional files under the
-harmonized collection directory are included as well.
+The selection is not restricted by filename or extension. Programs can use different naming conventions and languages, including Stata `.do`, R, Python, or other script files exposed by the catalog. Repository tracking is limited to files below `Programs/`; known data, document, and binary extensions are excluded as a safety measure.
 
-Source/non-harmonized files under directories such as `..._V01_M/Data/Stata/`
-are intentionally excluded. The catalog's complete `FilePath` is preserved
-below `FDP_PATH`, including the country, survey, version, collection, and
-directory structure.
+Raw/non-harmonized files under directories such as `..._V01_M/Data/Stata/` are intentionally excluded. The catalog's complete `FilePath` is preserved below `FDP_PATH`, including the country, survey, version, collection, and directory structure. The same relative path is used below repository `FDP/` for program files only.
 
 ## Safe Synchronization
 
 - Catalog paths must be relative and cannot contain `..` path components.
-- Downloads are streamed to a temporary file in the destination directory, so
-  large datasets are not buffered in memory.
-- A destination is replaced only after the complete response is received and
-  validated.
-- The response filename and `Content-Length` are checked when supplied by the
-  API.
+- Downloads are streamed to a temporary file in the destination directory, so large datasets are not buffered in memory.
+- A destination is replaced only after the complete response is received and validated.
+- The response filename and `Content-Length` are checked when supplied by the API.
 - A local SHA-256 manifest is written after a successful complete sync.
-- The API's current checksum field is retained as metadata but is not trusted
-  for change detection because it currently reports the same empty-file MD5
-  value for all observed catalog rows.
-- Existing local files are not treated as unchanged until a matching manifest
-  entry and SHA-256 hash are available.
+- The API's current checksum field is retained as metadata but is not trusted for change detection because it currently reports the same empty-file MD5 value for all observed catalog rows.
+- Existing local files are not treated as unchanged until a matching manifest entry and SHA-256 hash are available.
 - Failed synchronization runs do not overwrite the previous manifest.
-- Requests retry connection failures and HTTP `429`, `500`, `502`, `503`, and
-  `504` responses up to `FDP_RETRIES` times.
-- The API's human-readable `FileSize` values are not treated as exact byte
-  counts. A local manifest hash is required before a file is considered
-  unchanged.
+- Requests retry connection failures and HTTP `429`, `500`, `502`, `503`, and `504` responses up to `FDP_RETRIES` times.
+- The API's human-readable `FileSize` values are not treated as exact byte counts. A local manifest hash is required before a file is considered unchanged.
+- A current file in `FDP_PATH` repairs a missing or changed repository program copy locally without another API download.
+- `FDP_PATH` and the repository root cannot contain one another, preventing microdata from being written into the Git worktree.
 
 ## Tests
 

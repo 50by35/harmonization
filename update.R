@@ -67,6 +67,17 @@ scalar_text <- function(value, default = "") {
 }
 
 sync_config <- function() {
+  script_args <- commandArgs(trailingOnly = FALSE)
+  script_file <- sub("^--file=", "", script_args[grepl("^--file=", script_args)])
+  repository_root <- Sys.getenv("FDP_REPO_PATH", unset = "")
+  if (!nzchar(repository_root)) {
+    repository_root <- if (length(script_file) > 0L) {
+      fs::path_dir(fs::path_abs(script_file[[1L]]))
+    } else {
+      fs::path_abs(getwd())
+    }
+  }
+
   list(
     base_url = Sys.getenv(
       "DLW_API_URL",
@@ -75,6 +86,8 @@ sync_config <- function() {
     api_version = Sys.getenv("DLW_API_VERSION", unset = "v1"),
     server = Sys.getenv("FDP_SERVER", unset = "FDP"),
     local_root = Sys.getenv("FDP_PATH", unset = ""),
+    repository_root = repository_root,
+    repository_program_root = fs::path(repository_root, "FDP"),
     manifest_name = Sys.getenv(
       "FDP_MANIFEST",
       unset = ".fdp-sync-manifest.csv"
@@ -423,6 +436,26 @@ is_harmonized_collection_path <- function(path) {
   grepl("(^|/)[^/]+_A_FDP/", path, ignore.case = TRUE)
 }
 
+is_program_path <- function(path) {
+  grepl("(^|/)Programs/", path, ignore.case = TRUE)
+}
+
+is_program_file <- function(path) {
+  if (!is_program_path(path)) {
+    return(FALSE)
+  }
+
+  # Keep arbitrary script languages, including extensionless programs, while
+  # preventing known data, document, and binary artifacts from entering Git.
+  extension <- tolower(tools::file_ext(basename(path)))
+  !extension %in% c(
+    "dta", "csv", "rds", "rdata", "rda", "sas7bdat", "xpt", "sav", "zsav",
+    "sps", "xlsx", "xls", "parquet", "feather", "sqlite", "db", "zip", "gz",
+    "bz2", "xz", "7z", "rar", "tar", "pdf", "png", "jpg", "jpeg", "gif",
+    "bmp", "tif", "tiff", "doc", "docx", "ppt", "pptx", "odt", "ods", "md"
+  )
+}
+
 validate_relative_path <- function(path) {
   if (is.na(path) || !nzchar(path)) {
     abort_sync("The catalog contains an empty FilePath.")
@@ -465,6 +498,54 @@ validate_catalog_paths <- function(catalog, local_root) {
   }
 
   catalog
+}
+
+validate_repository_paths <- function(catalog, repository_root) {
+  catalog[, IsProgram := vapply(FilePath, is_program_file, logical(1L))]
+  catalog[, RepoRelativePath := NA_character_]
+  catalog[IsProgram, RepoRelativePath := RelativePath]
+
+  program_paths <- catalog[IsProgram, RepoRelativePath]
+  if (length(program_paths) > 0L) {
+    catalog[IsProgram, RepoPath := fs::path(repository_root, "FDP", RepoRelativePath)]
+    repo_keys <- tolower(program_paths)
+    if (anyDuplicated(repo_keys)) {
+      duplicates <- unique(program_paths[duplicated(repo_keys)])
+      abort_sync(
+        "The FDP catalog contains repository program paths that collide on case-insensitive filesystems: ",
+        paste(duplicates, collapse = ", ")
+      )
+    }
+  } else {
+    catalog[, RepoPath := NA_character_]
+  }
+
+  if (length(program_paths) > 0L) {
+    repo_root <- fs::path_norm(fs::path_abs(fs::path(repository_root, "FDP")))
+    repo_paths <- fs::path_norm(fs::path_abs(catalog[IsProgram, RepoPath]))
+    inside_root <- if (identical(repo_root, "/")) {
+      startsWith(repo_paths, "/")
+    } else {
+      repo_paths == repo_root | startsWith(repo_paths, paste0(repo_root, "/"))
+    }
+    if (any(!inside_root)) {
+      abort_sync("At least one repository program path escapes the repository FDP directory.")
+    }
+  }
+
+  catalog
+}
+
+validate_destination_roots <- function(config) {
+  local_root <- fs::path_norm(fs::path_abs(config$local_root))
+  repository_root <- fs::path_norm(fs::path_abs(config$repository_root))
+  if (path_is_within(local_root, repository_root) || path_is_within(repository_root, local_root)) {
+    abort_sync(
+      "FDP_PATH must be outside the repository tree so harmonized microdata cannot be written to Git: ",
+      config$local_root
+    )
+  }
+  invisible(TRUE)
 }
 
 path_is_within <- function(path, root) {
@@ -729,6 +810,35 @@ atomic_replace <- function(source, destination) {
   invisible(destination)
 }
 
+atomic_copy <- function(source, destination, root) {
+  ensure_destination_parent(root, destination)
+  temp_path <- fs::file_temp(
+    pattern = ".fdp-copy-",
+    tmp_dir = fs::path_dir(destination)
+  )
+  on.exit(if (fs::file_exists(temp_path)) fs::file_delete(temp_path), add = TRUE)
+  if (!file.copy(source, temp_path, overwrite = TRUE, copy.date = TRUE)) {
+    abort_sync("Could not copy ", source, " to temporary repository path.")
+  }
+  atomic_replace(temp_path, destination)
+  invisible(destination)
+}
+
+same_repository_file <- function(row) {
+  if (!isTRUE(row$IsProgram)) {
+    return(TRUE)
+  }
+  if (!fs::file_exists(row$RepoPath)) {
+    return(FALSE)
+  }
+
+  local_size <- fs::file_info(row$LocalPath)$size
+  repository_size <- fs::file_info(row$RepoPath)$size
+  !is.na(local_size) && !is.na(repository_size) &&
+    identical(as.numeric(local_size), as.numeric(repository_size)) &&
+    identical(sha256_file(row$LocalPath), sha256_file(row$RepoPath))
+}
+
 cleanup_temp_files <- function(local_root) {
   if (!fs::dir_exists(local_root)) {
     return(invisible(character()))
@@ -745,7 +855,7 @@ cleanup_temp_files <- function(local_root) {
   }
 
   temporary_files <- local_files[grepl(
-    "(^|/)[.]fdp-(download|manifest)-",
+    "(^|/)[.]fdp-(download|copy|manifest)-",
     local_files
   )]
   if (length(temporary_files) > 0L) {
@@ -779,54 +889,86 @@ sync_files <- function(catalog, config, manifest) {
     row <- catalog[i]
     manifest_row <- manifest[RelativePath == row$RelativePath]
 
-    if (same_local_file(row, manifest_row, refresh = config$refresh)) {
+    local_unchanged <- same_local_file(row, manifest_row, refresh = config$refresh)
+    repository_unchanged <- same_repository_file(row)
+
+    if (local_unchanged && repository_unchanged) {
       results[[i]] <- list(
         RelativePath = row$RelativePath,
         status = "unchanged",
         bytes = fs::file_info(row$LocalPath)$size,
-        sha256 = if (nrow(manifest_row) == 1L) manifest_row$Sha256[[1L]] else ""
+        sha256 = if (nrow(manifest_row) == 1L) manifest_row$Sha256[[1L]] else "",
+        repository_status = if (isTRUE(row$IsProgram)) "unchanged" else ""
       )
       next
     }
 
-    action <- if (fs::file_exists(row$LocalPath)) "update" else "download"
+    action <- if (local_unchanged) "copy" else if (fs::file_exists(row$LocalPath)) "update" else "download"
+    needs_repository_copy <- isTRUE(row$IsProgram) &&
+      (!repository_unchanged || !local_unchanged)
     if (config$dry_run) {
       results[[i]] <- list(
         RelativePath = row$RelativePath,
         status = paste0("would_", action),
         bytes = NA_real_,
-        sha256 = ""
+        sha256 = if (local_unchanged && nrow(manifest_row) == 1L) manifest_row$Sha256[[1L]] else "",
+        repository_status = if (needs_repository_copy) "would_copy" else ""
       )
       next
     }
 
-    ensure_destination_parent(config$local_root, row$LocalPath)
-    downloaded <- tryCatch(download_row(row, config), error = identity)
-    if (inherits(downloaded, "error")) {
-      results[[i]] <- failure_result(row$RelativePath, downloaded)
-      next
+    downloaded <- NULL
+    if (!local_unchanged) {
+      ensure_destination_parent(config$local_root, row$LocalPath)
+      downloaded <- tryCatch(download_row(row, config), error = identity)
+      if (inherits(downloaded, "error")) {
+        results[[i]] <- failure_result(row$RelativePath, downloaded)
+        next
+      }
+
+      replacement_error <- tryCatch(
+        {
+          atomic_replace(downloaded$temp_path, row$LocalPath)
+          NULL
+        },
+        error = identity
+      )
+      if (inherits(replacement_error, "error")) {
+        if (fs::file_exists(downloaded$temp_path)) {
+          fs::file_delete(downloaded$temp_path)
+        }
+        results[[i]] <- failure_result(row$RelativePath, replacement_error)
+        next
+      }
+    } else {
+      downloaded <- list(
+        bytes = as.numeric(fs::file_info(row$LocalPath)$size),
+        sha256 = sha256_file(row$LocalPath)
+      )
     }
 
-    replacement_error <- tryCatch(
-      {
-        atomic_replace(downloaded$temp_path, row$LocalPath)
-        NULL
-      },
-      error = identity
-    )
-    if (inherits(replacement_error, "error")) {
-      if (fs::file_exists(downloaded$temp_path)) {
-        fs::file_delete(downloaded$temp_path)
+    repository_status <- ""
+    if (needs_repository_copy) {
+      copy_error <- tryCatch(
+        {
+          atomic_copy(row$LocalPath, row$RepoPath, config$repository_program_root)
+          NULL
+        },
+        error = identity
+      )
+      if (inherits(copy_error, "error")) {
+        results[[i]] <- failure_result(row$RelativePath, copy_error)
+        next
       }
-      results[[i]] <- failure_result(row$RelativePath, replacement_error)
-      next
+      repository_status <- "copy"
     }
 
     results[[i]] <- list(
       RelativePath = row$RelativePath,
       status = action,
       bytes = downloaded$bytes,
-      sha256 = downloaded$sha256
+      sha256 = downloaded$sha256,
+      repository_status = repository_status
     )
   }
 
@@ -907,19 +1049,45 @@ find_orphans <- function(catalog, config, manifest_path_value) {
   relative[!relative %in% tracked]
 }
 
-print_summary <- function(results, orphans, config) {
+find_repository_orphans <- function(catalog, config) {
+  if (!fs::dir_exists(config$repository_program_root)) {
+    return(character())
+  }
+
+  tracked <- catalog[IsProgram, RepoRelativePath]
+  local_files <- fs::dir_ls(
+    config$repository_program_root,
+    recurse = TRUE,
+    type = "file",
+    fail = FALSE
+  )
+  if (length(local_files) == 0L) {
+    return(character())
+  }
+
+  relative <- fs::path_rel(local_files, start = config$repository_program_root)
+  relative[!relative %in% tracked]
+}
+
+print_summary <- function(results, orphans, repository_orphans, config) {
   counts <- table(factor(
     results$status,
-    levels = c("unchanged", "download", "update", "failed", "would_download", "would_update")
+    levels = c(
+      "unchanged", "download", "update", "copy", "failed",
+      "would_download", "would_update", "would_copy"
+    )
   ))
   cat("FDP synchronization", if (config$dry_run) "(dry run)" else "", "\n", sep = " ")
   cat("  unchanged: ", counts[["unchanged"]], "\n", sep = "")
   cat("  downloaded: ", counts[["download"]], "\n", sep = "")
   cat("  updated: ", counts[["update"]], "\n", sep = "")
+  cat("  copied: ", counts[["copy"]], "\n", sep = "")
   cat("  failed: ", counts[["failed"]], "\n", sep = "")
   cat("  would download: ", counts[["would_download"]], "\n", sep = "")
   cat("  would update: ", counts[["would_update"]], "\n", sep = "")
+  cat("  would copy: ", counts[["would_copy"]], "\n", sep = "")
   cat("  local orphans: ", length(orphans), "\n", sep = "")
+  cat("  repository code orphans: ", length(repository_orphans), "\n", sep = "")
 
   failures <- results[status == "failed"]
   if (nrow(failures) > 0L) {
@@ -933,31 +1101,41 @@ print_summary <- function(results, orphans, config) {
     cat("\nLocal files absent from the current catalog (not deleted):\n")
     cat(paste0("  - ", orphans, collapse = "\n"), "\n", sep = "")
   }
+
+  if (length(repository_orphans) > 0L) {
+    cat("\nRepository code files absent from the current catalog (not deleted):\n")
+    cat(paste0("  - ", repository_orphans, collapse = "\n"), "\n", sep = "")
+  }
 }
 
 run_sync <- function() {
   config <- sync_config()
   require_config(config)
+  validate_destination_roots(config)
   if (!config$dry_run) {
     fs::dir_create(config$local_root, recurse = TRUE)
+    fs::dir_create(config$repository_program_root, recurse = TRUE)
     cleanup_temp_files(config$local_root)
+    cleanup_temp_files(config$repository_program_root)
   }
 
   catalog <- get_catalog(config)
   catalog <- select_sync_files(catalog, config$server)
   catalog <- validate_catalog_paths(catalog, config$local_root)
+  catalog <- validate_repository_paths(catalog, config$repository_root)
   manifest_file <- manifest_path(config)
   existing_manifest <- read_manifest(manifest_file)
 
   results <- sync_files(catalog, config, existing_manifest)
   orphans <- find_orphans(catalog, config, manifest_file)
+  repository_orphans <- find_repository_orphans(catalog, config)
 
   if (!config$dry_run && !any(results$status == "failed")) {
     manifest <- build_manifest(catalog, results, existing_manifest)
     write_manifest(manifest, manifest_file)
   }
 
-  print_summary(results, orphans, config)
+  print_summary(results, orphans, repository_orphans, config)
 
   if (any(results$status == "failed")) {
     abort_sync("One or more files failed to synchronize.")
