@@ -66,6 +66,10 @@ scalar_text <- function(value, default = "") {
   }
 }
 
+plain_bytes <- function(path) {
+  as.numeric(fs::file_info(path)$size)
+}
+
 sync_config <- function() {
   script_args <- commandArgs(trailingOnly = FALSE)
   script_file <- sub("^--file=", "", script_args[grepl("^--file=", script_args)])
@@ -445,14 +449,11 @@ is_program_file <- function(path) {
     return(FALSE)
   }
 
-  # Keep arbitrary script languages, including extensionless programs, while
-  # preventing known data, document, and binary artifacts from entering Git.
   extension <- tolower(tools::file_ext(basename(path)))
-  !extension %in% c(
-    "dta", "csv", "rds", "rdata", "rda", "sas7bdat", "xpt", "sav", "zsav",
-    "sps", "xlsx", "xls", "parquet", "feather", "sqlite", "db", "zip", "gz",
-    "bz2", "xz", "7z", "rar", "tar", "pdf", "png", "jpg", "jpeg", "gif",
-    "bmp", "tif", "tiff", "doc", "docx", "ppt", "pptx", "odt", "ods", "md"
+  extension %in% c(
+    "ado", "bash", "bat", "c", "cmd", "cpp", "do", "h", "hpp", "java",
+    "jl", "js", "m", "pl", "ps1", "py", "pyw", "r", "rmd", "sas", "sh",
+    "sps", "sql", "stata", "ts"
   )
 }
 
@@ -503,11 +504,11 @@ validate_catalog_paths <- function(catalog, local_root) {
 validate_repository_paths <- function(catalog, repository_root) {
   catalog[, IsProgram := vapply(FilePath, is_program_file, logical(1L))]
   catalog[, RepoRelativePath := NA_character_]
-  catalog[IsProgram, RepoRelativePath := RelativePath]
+  catalog[IsProgram == TRUE, RepoRelativePath := RelativePath]
 
-  program_paths <- catalog[IsProgram, RepoRelativePath]
+  program_paths <- catalog[IsProgram == TRUE, RepoRelativePath]
   if (length(program_paths) > 0L) {
-    catalog[IsProgram, RepoPath := fs::path(repository_root, "FDP", RepoRelativePath)]
+    catalog[IsProgram == TRUE, RepoPath := fs::path(repository_root, "FDP", RepoRelativePath)]
     repo_keys <- tolower(program_paths)
     if (anyDuplicated(repo_keys)) {
       duplicates <- unique(program_paths[duplicated(repo_keys)])
@@ -522,7 +523,7 @@ validate_repository_paths <- function(catalog, repository_root) {
 
   if (length(program_paths) > 0L) {
     repo_root <- fs::path_norm(fs::path_abs(fs::path(repository_root, "FDP")))
-    repo_paths <- fs::path_norm(fs::path_abs(catalog[IsProgram, RepoPath]))
+    repo_paths <- fs::path_norm(fs::path_abs(catalog[IsProgram == TRUE, RepoPath]))
     inside_root <- if (identical(repo_root, "/")) {
       startsWith(repo_paths, "/")
     } else {
@@ -537,8 +538,8 @@ validate_repository_paths <- function(catalog, repository_root) {
 }
 
 validate_destination_roots <- function(config) {
-  local_root <- fs::path_norm(fs::path_abs(config$local_root))
-  repository_root <- fs::path_norm(fs::path_abs(config$repository_root))
+  local_root <- resolve_path(config$local_root)
+  repository_root <- resolve_path(config$repository_root)
   if (path_is_within(local_root, repository_root) || path_is_within(repository_root, local_root)) {
     abort_sync(
       "FDP_PATH must be outside the repository tree so harmonized microdata cannot be written to Git: ",
@@ -546,6 +547,18 @@ validate_destination_roots <- function(config) {
     )
   }
   invisible(TRUE)
+}
+
+resolve_path <- function(path) {
+  path <- fs::path_abs(path)
+  missing <- character()
+  while (!fs::file_exists(path) && !fs::dir_exists(path)) {
+    missing <- c(basename(path), missing)
+    parent <- fs::path_dir(path)
+    if (identical(parent, path)) break
+    path <- parent
+  }
+  fs::path_norm(do.call(fs::path, c(list(fs::path_real(path)), as.list(missing))))
 }
 
 path_is_within <- function(path, root) {
@@ -824,11 +837,11 @@ atomic_copy <- function(source, destination, root) {
   invisible(destination)
 }
 
-same_repository_file <- function(row) {
+same_repository_file <- function(row, expected_sha256) {
   if (!isTRUE(row$IsProgram)) {
     return(TRUE)
   }
-  if (!fs::file_exists(row$RepoPath)) {
+  if (!fs::file_exists(row$RepoPath) || !nzchar(expected_sha256)) {
     return(FALSE)
   }
 
@@ -836,7 +849,7 @@ same_repository_file <- function(row) {
   repository_size <- fs::file_info(row$RepoPath)$size
   !is.na(local_size) && !is.na(repository_size) &&
     identical(as.numeric(local_size), as.numeric(repository_size)) &&
-    identical(sha256_file(row$LocalPath), sha256_file(row$RepoPath))
+    identical(expected_sha256, sha256_file(row$RepoPath))
 }
 
 cleanup_temp_files <- function(local_root) {
@@ -890,13 +903,19 @@ sync_files <- function(catalog, config, manifest) {
     manifest_row <- manifest[RelativePath == row$RelativePath]
 
     local_unchanged <- same_local_file(row, manifest_row, refresh = config$refresh)
-    repository_unchanged <- same_repository_file(row)
+    expected_sha256 <- if (local_unchanged && nrow(manifest_row) == 1L) {
+      scalar_text(manifest_row$Sha256[[1L]])
+    } else {
+      ""
+    }
+    repository_unchanged <- local_unchanged &&
+      same_repository_file(row, expected_sha256)
 
     if (local_unchanged && repository_unchanged) {
       results[[i]] <- list(
         RelativePath = row$RelativePath,
         status = "unchanged",
-        bytes = fs::file_info(row$LocalPath)$size,
+        bytes = plain_bytes(row$LocalPath),
         sha256 = if (nrow(manifest_row) == 1L) manifest_row$Sha256[[1L]] else "",
         repository_status = if (isTRUE(row$IsProgram)) "unchanged" else ""
       )
@@ -942,7 +961,7 @@ sync_files <- function(catalog, config, manifest) {
       }
     } else {
       downloaded <- list(
-        bytes = as.numeric(fs::file_info(row$LocalPath)$size),
+        bytes = plain_bytes(row$LocalPath),
         sha256 = sha256_file(row$LocalPath)
       )
     }
@@ -1054,7 +1073,7 @@ find_repository_orphans <- function(catalog, config) {
     return(character())
   }
 
-  tracked <- catalog[IsProgram, RepoRelativePath]
+  tracked <- catalog[IsProgram == TRUE, RepoRelativePath]
   local_files <- fs::dir_ls(
     config$repository_program_root,
     recurse = TRUE,
@@ -1081,11 +1100,11 @@ print_summary <- function(results, orphans, repository_orphans, config) {
   cat("  unchanged: ", counts[["unchanged"]], "\n", sep = "")
   cat("  downloaded: ", counts[["download"]], "\n", sep = "")
   cat("  updated: ", counts[["update"]], "\n", sep = "")
-  cat("  copied: ", counts[["copy"]], "\n", sep = "")
+  cat("  copied: ", sum(results$repository_status == "copy", na.rm = TRUE), "\n", sep = "")
   cat("  failed: ", counts[["failed"]], "\n", sep = "")
   cat("  would download: ", counts[["would_download"]], "\n", sep = "")
   cat("  would update: ", counts[["would_update"]], "\n", sep = "")
-  cat("  would copy: ", counts[["would_copy"]], "\n", sep = "")
+  cat("  would copy: ", sum(results$repository_status == "would_copy", na.rm = TRUE), "\n", sep = "")
   cat("  local orphans: ", length(orphans), "\n", sep = "")
   cat("  repository code orphans: ", length(repository_orphans), "\n", sep = "")
 

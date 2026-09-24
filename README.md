@@ -8,21 +8,23 @@ This repository maintains a local mirror of the harmonized files available from 
 
 - R 4.2 or newer
 - A Datalibweb token with access to the FDP server
-- R packages: `data.table`, `digest`, `fs`, and `httr2`
+- R packages managed by `renv` (runtime: `data.table`, `digest`, `fs`, and `httr2`; tests additionally use `testthat` and `withr`)
 - A local directory with enough storage for the mirror
 - The configured `FDP_PATH` must be outside this repository
 
-Install the R packages if needed:
+Restore the project environment from the lockfile:
 
-```r
-install.packages(c("data.table", "digest", "fs", "httr2"))
+```sh
+Rscript -e 'renv::restore()'
 ```
 
-For the test suite, also install `testthat`:
+After changing dependencies, update the lockfile:
 
-```r
-install.packages("testthat")
+```sh
+Rscript -e 'renv::snapshot()'
 ```
+
+The committed `renv.lock` records the R version and exact package versions.
 
 ## Configuration
 
@@ -56,6 +58,7 @@ Optional variables:
 Run from the repository root:
 
 ```sh
+Rscript -e 'renv::restore()'  # first setup only
 Rscript update.R
 ```
 
@@ -86,7 +89,7 @@ This currently includes:
 - Harmonized Stata datasets under `Data/Harmonized/`
 - Harmonization code under `Programs/`. These files are downloaded once to `FDP_PATH` and copied from there into the repository's `FDP/` tree.
 
-The selection is not restricted by filename or extension. Programs can use different naming conventions and languages, including Stata `.do`, R, Python, or other script files exposed by the catalog. Repository tracking is limited to files below `Programs/`; known data, document, and binary extensions are excluded as a safety measure.
+Programs can use different naming conventions and supported source formats, including Stata `.do`/`.ado`, R, Python, SAS, SQL, and shell scripts. The repository mirror uses a source-extension allowlist so unfamiliar data, document, and binary formats are not copied into Git; all catalog files still go to `FDP_PATH`.
 
 Raw/non-harmonized files under directories such as `..._V01_M/Data/Stata/` are intentionally excluded. The catalog's complete `FilePath` is preserved below `FDP_PATH`, including the country, survey, version, collection, and directory structure. The same relative path is used below repository `FDP/` for program files only.
 

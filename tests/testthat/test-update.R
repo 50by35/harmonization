@@ -52,8 +52,14 @@ test_that("only program paths are mirrored into the repository", {
   expect_true(update_env$is_program_file(
     "COL/survey_V01_M_V01_A_FDP/Programs/harmonize.py"
   ))
-  expect_true(update_env$is_program_file(
+  expect_false(update_env$is_program_file(
     "COL/survey_V01_M_V01_A_FDP/Programs/run"
+  ))
+  expect_false(update_env$is_program_file(
+    "COL/survey_V01_M_V01_A_FDP/Programs/metadata.json"
+  ))
+  expect_true(update_env$is_program_file(
+    "COL/survey_V01_M_V01_A_FDP/Programs/config.sql"
   ))
   expect_false(update_env$is_program_file(
     "COL/survey_V01_M_V01_A_FDP/Programs/reference.dta"
@@ -114,10 +120,28 @@ test_that("a current full mirror can repair a repository program copy", {
     LocalPath = source,
     RepoPath = destination
   )
+  sha256 <- update_env$sha256_file(source)
 
-  expect_false(update_env$same_repository_file(row))
+  expect_false(update_env$same_repository_file(row, sha256))
   update_env$atomic_copy(source, destination, repository)
-  expect_true(update_env$same_repository_file(row))
+  expect_true(update_env$same_repository_file(row, sha256))
+})
+
+test_that("destination root checks resolve existing symlink ancestors", {
+  skip_on_os("windows")
+  root <- tempfile("fdp-root-")
+  repository <- fs::path(root, "repository")
+  mirror <- fs::path(root, "mirror")
+  dir.create(repository, recursive = TRUE)
+  dir.create(mirror)
+  alias <- fs::path(root, "repository-alias")
+  file.symlink(repository, alias)
+  config <- list(local_root = fs::path(alias, "mirror"), repository_root = repository)
+
+  expect_error(
+    update_env$validate_destination_roots(config),
+    "outside the repository tree"
+  )
 })
 
 test_that("catalog paths are restricted to relative safe paths", {
@@ -171,6 +195,16 @@ test_that("manifest hashes identify an unchanged local file", {
 
   writeBin(charToRaw("changed"), local_path)
   expect_false(update_env$same_local_file(catalog_row, manifest_row))
+})
+
+test_that("file sizes are normalized to plain numeric values", {
+  root <- tempfile("fdp-bytes-")
+  dir.create(root)
+  path <- fs::path(root, "file.do")
+  writeBin(charToRaw("display hello"), path)
+
+  expect_type(update_env$plain_bytes(path), "double")
+  expect_identical(update_env$plain_bytes(path), as.numeric(fs::file_info(path)$size))
 })
 
 test_that("manifest builder records successfully synchronized files", {
