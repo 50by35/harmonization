@@ -12,6 +12,10 @@ This repository maintains a local mirror of the harmonized files available from 
 - A local directory with enough storage for the mirror
 - The configured `FDP_PATH` must be outside this repository
 
+The `DLW_TOKEN` must have permission to access all files in the harmonized
+FDP collection for synchronization to complete successfully. Verified users
+can request a token at <https://datalibweb2.worldbank.org/>.
+
 Restore the project environment from the lockfile:
 
 ```sh
